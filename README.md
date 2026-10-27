@@ -1,8 +1,25 @@
 # HoneyLeak Defense
 
-A hands-on, defense-in-depth project against the bots that steal leaked secrets on GitHub. The idea is simple: **prevent** the leak, **trap** whatever slips through, and **analyze** whoever takes the bait.
+> A hands-on, defense-in-depth project against the bots that steal leaked secrets on GitHub.
+> **Prevent** the leak, **trap** whatever slips through, and **analyze** whoever takes the bait.
 
-I built this on my own machine in a single day, with free and open-source tools only. No virtual machines, no paid cloud.
+Built in one day on a normal Windows machine, with free and open-source tools only — no virtual machines, no paid cloud.
+
+---
+
+## Table of contents
+
+- [Why I built this](#why-i-built-this)
+- [How it works — 3 layers](#how-it-works--3-layers)
+- [Layer 1 — Prevention](#layer-1--prevention)
+- [Layers 2 & 3 — Deception and analysis](#layers-2--3--deception-and-analysis)
+- [An unexpected finding: GitHub already fights back](#an-unexpected-finding-github-already-fights-back)
+- [Results](#results)
+- [Reproduce it yourself](#reproduce-it-yourself)
+- [What I learned (the hard parts)](#what-i-learned-the-hard-parts)
+- [MITRE ATT&CK mapping](#mitre-attck-mapping)
+- [Repository structure](#repository-structure)
+- [Ethics & scope](#ethics--scope)
 
 ---
 
@@ -34,7 +51,7 @@ The first layer is the real defense. The other two are a safety net: if a secret
 
 ## Layer 1 — Prevention
 
-Two barriers, using the same scanner (Gitleaks) at two different moments.
+The goal is simple: no secret should ever reach GitHub. I use the same scanner (Gitleaks) at two different moments.
 
 First, I installed Gitleaks and checked it was working:
 
@@ -44,7 +61,7 @@ First, I installed Gitleaks and checked it was working:
 
 ![Gitleaks detects and redacts the two secrets](images/04-precommit-blocked.png)
 
-Here Gitleaks found two secrets and redacted them (notice the entropy values — more on that below). The same scan runs as the pre-commit hook, so a commit containing a real key is refused before it's ever saved.
+Here Gitleaks caught two secrets and redacted them. Notice the two detection rules it used — `aws-access-token` for the key ID, and `generic-api-key` for the secret (entropy 4.81). The same scan runs as the pre-commit hook, so a commit containing a real key is refused before it's ever saved.
 
 **Barrier 2 — on the server (GitHub Actions).** The same scan runs automatically on GitHub's servers at every push. This matters because the local hook can be bypassed (`git commit --no-verify`) or simply not installed by a teammate. The server-side check always runs.
 
@@ -54,15 +71,15 @@ Here Gitleaks found two secrets and redacted them (notice the entropy values —
 
 ## Layers 2 & 3 — Deception and analysis
 
-I created a **canary token** (a fake AWS key that does nothing except raise an alert the moment someone uses it) and planted it in a separate, innocent-looking public "backup scripts" repository.
+Prevention is never perfect, so I added a tripwire. I created a **canary token** — a fake AWS key that does nothing except raise an alert the moment someone tries to use it.
 
 ![Canary token created on canarytokens.org](images/01-canary-setup.png)
 
-Then I made the repo public and started the clock. Any time the key is used, I get an alert with the source IP, the time, and the AWS action that was attempted.
+I planted it in a separate, innocent-looking public "backup scripts" repository, made it public, and started the clock. Any time the key is used, I get an alert with the source IP, the timestamp, and the AWS action that was attempted.
 
 ![Canary token triggered alert](images/06-canary-alert.png)
 
-A small Python script turns these raw alerts into an analyst-style report. It reads a `hits.csv` file (one line per alert), geolocates each IP, and prints the key numbers: time to first access, number of attempts, and the countries / hosting providers involved.
+A small Python script (`analyse.py`) turns these raw alerts into an analyst-style summary. It reads `hits.csv` (one line per alert), geolocates each external IP via `ip-api.com`, and prints the key numbers: time to first access, number of attempts, and the countries / hosting providers involved.
 
 ---
 
@@ -72,22 +89,66 @@ When I tried to push my bait repo with the fake key, GitHub's own **Push Protect
 
 ![GitHub Push Protection blocking the push](images/02-push-protection.png)
 
-That was a lesson in itself. GitHub is a secret-scanning partner with AWS, so it refuses pushes containing recognizable AWS keys by default. In other words, there's a defensive layer running before my own pipeline even enters the picture. (Worth noting: research shows ~52% of real leaked secrets use formats this protection doesn't catch — so it helps, but doesn't cover everything.) I allowed the secret on purpose, for the experiment, and the push went through.
+That was a lesson in itself. GitHub is a secret-scanning partner with AWS, so by default it refuses pushes that contain recognizable AWS keys. In other words, there's a defensive layer running before my own pipeline even enters the picture. Worth noting: research shows ~52% of real leaked secrets use formats this protection doesn't catch — so it helps, but doesn't cover everything. I allowed the secret on purpose, for the experiment, and the push went through.
 
 ---
 
 ## Results
 
-The very first trigger arrived **within about 1–3 minutes** of the key going public. But reading it carefully taught me something important:
+The first trigger arrived **within about 2 minutes** of the key going public. But reading it carefully taught me the most important lesson of the project — not every hit is an attacker.
 
-- **Source IP: AWS Internal**
-- **Event: AttachUserPolicy**
+| Timestamp (UTC) | Source | Event | What it really is |
+|-----------------|--------|-------|-------------------|
+| 2026-10-27 14:47 | AWS Internal | `AttachUserPolicy` | AWS automatically quarantining the leaked key |
 
-This first hit wasn't a criminal bot — it was **AWS itself**. When a key leaks publicly, AWS automatically attaches a quarantine policy to neutralize it (that's the `AttachUserPolicy` event). So my first "attacker" was actually an automated *defense* system reacting in minutes.
+This first "attacker" was actually **AWS itself**. When a key leaks publicly, AWS detects it and automatically attaches a quarantine policy to neutralize it (the `AttachUserPolicy` event). So my first hit was an automated *defense* system reacting in minutes — not a criminal bot.
 
-The malicious bots are the ones that show up with **external IPs** and reconnaissance calls like `GetCallerIdentity` or `ListBuckets`. I keep logging every alert and separating the two categories: automated AWS responses on one side, external bots on the other.
+Real malicious bots show up with **external IPs** and reconnaissance calls like `GetCallerIdentity` or `ListBuckets`. **As of this writing, no external bot has used the key yet.** The canary is still live, and I keep logging every alert, separating automated AWS responses from genuine external activity. This section is updated as new data comes in.
 
-*(This section is updated as new alerts come in.)*
+> Takeaway so far: a leaked AWS key is flagged by at least two automated systems (GitHub Push Protection, then AWS quarantine) within minutes — which is exactly why prevention at the source matters more than cleanup.
+
+---
+
+## Reproduce it yourself
+
+**Layer 1 — prevention.** Add `.pre-commit-config.yaml` to your repo:
+
+```yaml
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks
+```
+
+Then enable the hook, and add the GitHub Actions workflow in `.github/workflows/gitleaks.yml`:
+
+```bash
+pip install pre-commit
+pre-commit install
+```
+
+```yaml
+name: Secret scan
+on: [push, pull_request]
+jobs:
+  gitleaks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+```
+
+**Layers 2 & 3 — deception and analysis.** Create an AWS canary token at [canarytokens.org](https://canarytokens.org), plant it in a public repo, then log alerts into `hits.csv` and run:
+
+```bash
+pip install requests
+python analyse.py
+```
 
 ---
 
@@ -95,23 +156,33 @@ The malicious bots are the ones that show up with **external IPs** and reconnais
 
 A few things didn't work on the first try — and that's where I learned the most:
 
-- **The AWS example key doesn't trigger anything.** My first test used `AKIAIOSFODNN7EXAMPLE` and nothing happened. It turns out Gitleaks keeps that key on an allowlist on purpose, because it's the placeholder from AWS's own documentation.
+- **The AWS example key doesn't trigger anything.** My first test used `AKIAIOSFODNN7EXAMPLE` and nothing happened. Gitleaks keeps that key on an allowlist on purpose, because it's the placeholder from AWS's own documentation.
 - **A fake key needs real randomness.** My next hand-made key also passed — its entropy was too low. Gitleaks only flags strings that look genuinely random. A real canary key (entropy ~3.8) was caught immediately by the `aws-access-token` rule.
-- **Telling defenders from attackers matters.** It would have been easy to log the first "AWS Internal" hit as a bot. Reading the event details carefully is the difference between a real analysis and a wrong conclusion.
+- **Telling defenders from attackers matters.** It would have been easy to log the first "AWS Internal" hit as a bot. Reading the event details carefully is the difference between real analysis and a wrong conclusion.
 
 ---
 
 ## MITRE ATT&CK mapping
 
-- **T1552.001** — Unsecured Credentials: Credentials In Files
-- **T1593.003** — Search Open Websites/Domains: Code Repositories
-- **T1078.004** — Valid Accounts: Cloud Accounts
+| Technique | Where it appears in this project |
+|-----------|----------------------------------|
+| **T1552.001** — Unsecured Credentials: Credentials In Files | The secret exposed in a file in the repo |
+| **T1593.003** — Search Open Websites/Domains: Code Repositories | Bots scanning GitHub for secrets |
+| **T1078.004** — Valid Accounts: Cloud Accounts | Any attempt to use the stolen AWS key |
 
 ---
 
-## Tech stack
+## Repository structure
 
-Gitleaks · pre-commit · GitHub Actions · Canary tokens (Thinkst) · Python · MITRE ATT&CK
+```
+honeyleak-defense/
+├── .github/workflows/gitleaks.yml   # Layer 1 — server-side secret scan (CI)
+├── .pre-commit-config.yaml          # Layer 1 — local secret scan (pre-commit)
+├── analyse.py                       # Layer 3 — turns alerts into an analyst report
+├── hits.csv                         # Layer 3 — log of canary alerts
+├── images/                          # Screenshots used in this README
+└── README.md
+```
 
 ---
 
@@ -121,4 +192,4 @@ This is a **100% defensive** project. Only canary tokens (fake secrets) are used
 
 ---
 
-*Yahia Morabet — SOC / Threat Intelligence project, 2026*
+*Yahia Morabet — SOC / Threat Intelligence project, 2026 · [github.com/MorabetYahia](https://github.com/MorabetYahia)*
