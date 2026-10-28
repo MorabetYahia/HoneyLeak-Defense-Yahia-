@@ -108,6 +108,19 @@ That was a lesson in itself. GitHub is a secret-scanning partner with AWS, so by
 
 ## Results
 
+### Key numbers
+
+| Metric | Value |
+|--------|-------|
+| Observation window | ~25 hours (27–28 Oct 2026) |
+| Malicious requests captured | **116** |
+| Unique attacker IPs | **12** |
+| Countries of origin | **8** |
+| Distinct bot families | **5** |
+| LLMjacking attempts (AWS Bedrock) | **15** |
+| AWS auto-quarantine of the key | **~2 min** after the leak |
+| First criminal bot to use the key | **~2–3 h** after the leak |
+
 In the first **~25 hours**, the baits drew **116 malicious requests from 12 unique IPs across 8 countries** — and two layers of automated reaction, one defensive and one criminal.
 
 **Defensive, in ~2 minutes.** The very first alert came from AWS itself: within ~2 minutes of a key going public, AWS automatically attached a quarantine policy (`AttachUserPolicy`, source "AWS Internal"). GitHub's partner program had already notified AWS. So before any criminal acted, two automated *defenders* — GitHub Push Protection, then AWS quarantine — had reacted.
@@ -128,6 +141,27 @@ In the first **~25 hours**, the baits drew **116 malicious requests from 12 uniq
 - **8 countries**: Canada, US, Colombia, Belgium, Spain, Mexico, Argentina, Paraguay.
 - **93% from hosting / cloud providers** (ReliableSite, Alibaba Cloud, OVH, Google Cloud); the few residential-ISP addresses were the coordinated enumeration burst — likely a proxy or botnet.
 - **5 distinct bot families**: `python-requests`, `aws-sdk-go-v2`, `python-httpx`, `Go-http-client`, `TruffleHog`.
+
+### The 12 attacking IPs
+
+Each row is a distinct attacker (first time it was seen). The full log of 116 requests is in [`hits.csv`](hits.csv).
+
+| # | First seen (UTC) | IP | Country | Infra | Bot | First action |
+|---|------------------|----|---------|-------|-----|--------------|
+| 1 | 2026-10-27 18:21 | 104.243.32.50 | US | hosting (ReliableSite) | Go-http-client | `InvokeModel` |
+| 2 | 2026-10-27 18:22 | 98.26.41.170 | US | ISP (Spectrum) | aws-sdk-go-v2 | `InvokeModelWithResponseStream` |
+| 3 | 2026-10-27 19:39 | 47.251.141.107 | US | hosting (Alibaba Cloud) | aws-sdk-go-v2 | `InvokeModel` |
+| 4 | 2026-10-27 23:25 | 186.85.240.19 | CO | ISP | python-httpx | `GetUser` |
+| 5 | 2026-10-27 23:25 | 91.178.82.217 | BE | ISP | python-httpx | `ListFunctions` |
+| 6 | 2026-10-27 23:25 | 178.237.225.243 | ES | ISP | python-httpx | `ListBuckets` |
+| 7 | 2026-10-27 23:25 | 152.202.106.42 | CO | ISP | python-httpx | `DescribeInstances` |
+| 8 | 2026-10-27 23:25 | 187.171.241.154 | MX | ISP | python-httpx | `ListSecrets` |
+| 9 | 2026-10-27 23:26 | 186.39.51.59 | AR | ISP | python-httpx | `GetCallerIdentity` |
+| 10 | 2026-10-27 23:26 | 200.50.157.126 | PY | ISP | python-httpx | `ListAttachedUserPolicies` |
+| 11 | 2026-10-28 03:10 | 54.39.181.162 | CA | hosting (OVH) | python-requests | `GetCallerIdentity` |
+| 12 | 2026-10-28 06:38 | 136.119.58.6 | US | hosting (Google Cloud) | TruffleHog | `GetCallerIdentity` |
+
+Rows 4–10 are the coordinated enumeration burst: 7 IPs from 6 countries, all within ~37 seconds, each probing a different part of the account.
 
 > Takeaway: a leaked AWS key isn't just "found" — within hours it is validated, enumerated, and abused for compute, by several independent actors. Prevention at the source (Layer 1) is the only reliable defense; once a key is public, cleanup is a race you have already lost.
 
