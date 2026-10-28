@@ -92,7 +92,7 @@ Any time a key is used, I get an alert with the source IP, the timestamp, and th
 
 ![Canary token triggered alert](images/06-canary-alert.png)
 
-The `analyse.py` script reads `hits.csv` (one line per alert, tagged with its bait), geolocates external IPs via `ip-api.com`, and compares the baits — time to first hit and number of hits per bait.
+Two scripts turn the raw alerts into analysis: `parse_hits.py` ingests the CSV exports from Canarytokens and produces a clean, consolidated `hits.csv`; `analyse.py` reads that and prints a threat-intelligence report — countries, infrastructure, AWS actions attempted, and bot families.
 
 ---
 
@@ -108,26 +108,28 @@ That was a lesson in itself. GitHub is a secret-scanning partner with AWS, so by
 
 ## Results
 
-The first trigger arrived **within about 2 minutes** of the first key going public. But reading it carefully taught me the most important lesson of the project — not every hit is an attacker.
+In the first **~25 hours**, the baits drew **116 malicious requests from 12 unique IPs across 8 countries** — and two layers of automated reaction, one defensive and one criminal.
 
-| Timestamp (UTC) | Source | Event | Bait | What it really is |
-|-----------------|--------|-------|------|-------------------|
-| 2026-10-27 14:47 | AWS Internal | `AttachUserPolicy` | credentials | AWS auto-quarantining the leaked key |
+**Defensive, in ~2 minutes.** The very first alert came from AWS itself: within ~2 minutes of a key going public, AWS automatically attached a quarantine policy (`AttachUserPolicy`, source "AWS Internal"). GitHub's partner program had already notified AWS. So before any criminal acted, two automated *defenders* — GitHub Push Protection, then AWS quarantine — had reacted.
 
-This first "attacker" was actually **AWS itself**. When a key leaks publicly, AWS detects it and automatically attaches a quarantine policy to neutralize it (the `AttachUserPolicy` event). So my first hit was an automated *defense* system reacting in minutes — not a criminal bot.
+**Criminal, within hours.** The first real bot hit at **2026-10-27 18:21:14**, from a US hosting provider, and went straight for `InvokeModel` — an attempt to abuse **AWS Bedrock**, i.e. run LLMs on my stolen account's bill. This is *LLMjacking*, one of 2026's signature cloud attacks, and it was the dominant intent I observed.
 
-Real malicious bots show up with **external IPs** and reconnaissance calls like `GetCallerIdentity` or `ListBuckets`. **As of this writing, no external bot has used the keys yet.** Four baits are live and being monitored, and I log every alert with the bait that fired, so I can compare them.
+### What the bots did
 
-### Comparison (updated as data comes in)
+| Attacker behaviour | Evidence |
+|--------------------|----------|
+| **LLMjacking** (run LLMs on the victim's account) | 15 × `InvokeModel` / `InvokeModelWithResponseStream`, via the `aws-sdk-go-v2` Bedrock SDK |
+| **Validation** (confirm the key is live) | 95 × `GetCallerIdentity`, incl. a persistent `python-requests` bot on OVH (Canada) |
+| **Enumeration burst** (map the account) | 6 IPs from 6 countries hitting `GetUser`, `ListBuckets`, `ListSecrets`, `DescribeInstances`, `ListFunctions`, `ListAttachedUserPolicies` within ~3 seconds — a distributed/proxied recon run |
+| **Secret-scanner validation** | 1 × `TruffleHog` from a Google Cloud IP — the scanner itself verified the key |
 
-| Bait | Secret type | First hit | Total hits |
-|------|-------------|-----------|------------|
-| credentials | AWS key | ~120 s (AWS auto-response) | 1 |
-| .env | AWS key | — | 0 |
-| docker-compose.yml | AWS key | — | 0 |
-| backup.sql | MySQL | — | 0 |
+### At a glance
 
-> Early takeaway: a leaked AWS key is flagged by at least two automated systems (GitHub Push Protection, then AWS quarantine) within minutes — which is exactly why prevention at the source matters more than cleanup.
+- **8 countries**: Canada, US, Colombia, Belgium, Spain, Mexico, Argentina, Paraguay.
+- **93% from hosting / cloud providers** (ReliableSite, Alibaba Cloud, OVH, Google Cloud); the few residential-ISP addresses were the coordinated enumeration burst — likely a proxy or botnet.
+- **5 distinct bot families**: `python-requests`, `aws-sdk-go-v2`, `python-httpx`, `Go-http-client`, `TruffleHog`.
+
+> Takeaway: a leaked AWS key isn't just "found" — within hours it is validated, enumerated, and abused for compute, by several independent actors. Prevention at the source (Layer 1) is the only reliable defense; once a key is public, cleanup is a race you have already lost.
 
 ---
 
@@ -191,7 +193,9 @@ A few things didn't work on the first try — and that's where I learned the mos
 |-----------|----------------------------------|
 | **T1552.001** — Unsecured Credentials: Credentials In Files | Secrets exposed in files in the repo |
 | **T1593.003** — Search Open Websites/Domains: Code Repositories | Bots scanning GitHub for secrets |
-| **T1078.004** — Valid Accounts: Cloud Accounts | Any attempt to use a stolen AWS key |
+| **T1078.004** — Valid Accounts: Cloud Accounts | `GetCallerIdentity` — bots validating the stolen key |
+| **T1526** — Cloud Service Discovery | The enumeration burst (`ListBuckets`, `ListSecrets`, `DescribeInstances`…) |
+| **T1496** — Resource Hijacking | `InvokeModel` — LLMjacking, abusing AWS Bedrock for compute |
 
 ---
 
@@ -201,8 +205,9 @@ A few things didn't work on the first try — and that's where I learned the mos
 honeyleak-defense/
 ├── .github/workflows/gitleaks.yml   # Layer 1 — server-side secret scan (CI)
 ├── .pre-commit-config.yaml          # Layer 1 — local secret scan (pre-commit)
-├── analyse.py                       # Layer 3 — turns alerts into a comparative report
-├── hits.csv                         # Layer 3 — log of canary alerts, tagged by bait
+├── parse_hits.py                    # Layer 3 — parses Canarytokens exports into hits.csv
+├── analyse.py                       # Layer 3 — threat-intelligence report from hits.csv
+├── hits.csv                         # Layer 3 — consolidated log of canary hits, tagged by bait
 ├── images/                          # Screenshots used in this README
 └── README.md
 ```

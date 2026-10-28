@@ -1,71 +1,65 @@
 """
-HoneyLeak Defense - analyse comparative des alertes canary.
-Lit hits.csv, geolocalise les IP externes, et compare les leurres entre eux.
+HoneyLeak Defense - analyse des hits capturs par les canary tokens.
+Lit hits.csv (genere par parse_hits.py) et affiche le rapport de threat intel.
+
+Usage : python analyse.py
 """
 import csv
-import requests
-from collections import defaultdict
-from datetime import datetime, timezone
+from collections import Counter
 
-# Heure UTC exacte ou le premier depot appat a ete rendu public (a adapter)
-LEAK_TIME = datetime(2026, 10, 27, 14, 45, 0, tzinfo=timezone.utc)
+BEDROCK = {"InvokeModel", "InvokeModelWithResponseStream"}  # AWS Bedrock = LLMjacking
 
 
-def load_hits(path="hits.csv"):
+def load(path="hits.csv"):
     with open(path, encoding="utf-8-sig") as f:
         return list(csv.DictReader(f))
 
 
-def enrich(hits):
-    for h in hits:
-        source = h["source"].strip()
-        if source[:1].isdigit():  # c'est une IP -> on geolocalise
-            try:
-                geo = requests.get(f"http://ip-api.com/json/{source}", timeout=5).json()
-                h["pays"] = geo.get("country", "?")
-                h["org"] = geo.get("org", "?")
-            except Exception:
-                h["pays"] = "?"
-                h["org"] = "?"
-        else:  # source non-IP (ex. "AWS Internal")
-            h["pays"] = "-"
-            h["org"] = source
-    return hits
+def family(ua):
+    return ua.lstrip("[").split("/")[0].strip()
 
 
-def seconds_since_leak(ts):
-    return (datetime.fromisoformat(ts).replace(tzinfo=timezone.utc) - LEAK_TIME).total_seconds()
+def show(title, counter, n=12):
+    print(title)
+    for k, v in counter.most_common(n):
+        print(f"  {v:>4}  {k}")
+    print()
 
 
 def main():
-    hits = enrich(load_hits())
-    if not hits:
-        print("Aucune alerte dans hits.csv")
+    rows = load()
+    if not rows:
+        print("hits.csv est vide. Lance d'abord parse_hits.py.")
         return
+    rows.sort(key=lambda r: r["timestamp"])
+    ips = {r["src_ip"] for r in rows}
+    bedrock = [r for r in rows if r["event"] in BEDROCK]
 
-    hits.sort(key=lambda h: h["timestamp"])
-    externes = [h for h in hits if h["type"].lower().startswith("bot")]
+    print("=" * 74)
+    print("HONEYLEAK DEFENSE - RAPPORT DE THREAT INTELLIGENCE")
+    print("=" * 74)
+    print(f"Periode            : {rows[0]['timestamp']} -> {rows[-1]['timestamp']}")
+    print(f"Requetes totales   : {len(rows)}")
+    print(f"IP uniques         : {len(ips)}")
+    print(f"Premiere exploit.  : {rows[0]['timestamp']} "
+          f"({rows[0]['src_ip']}, {rows[0]['country']}, {rows[0]['event']})")
+    print(f"LLMjacking (Bedrock): {len(bedrock)} tentatives")
+    print("=" * 74)
 
-    print(f"Premier hit en {seconds_since_leak(hits[0]['timestamp']):.0f} s")
-    print(f"Total alertes : {len(hits)}  |  Bots externes : {len(externes)}")
-    print("=" * 72)
+    show("Pays d'origine :", Counter(r["country"] for r in rows))
+    show("Type d'infrastructure :", Counter(r["asn_type"] for r in rows))
+    show("Actions AWS tentees :", Counter(r["event"] for r in rows))
+    show("Familles de bots (user-agent) :", Counter(family(r["useragent"]) for r in rows))
+    show("Par leurre :", Counter(r["bait"] for r in rows))
 
-    # Comparaison par leurre
-    by_bait = defaultdict(list)
-    for h in hits:
-        by_bait[h.get("bait", "?")].append(h)
-
-    print("Comparaison par leurre :")
-    print(f"  {'Leurre':22} | {'Hits':>4} | 1er hit")
-    print("  " + "-" * 44)
-    for bait, rows in sorted(by_bait.items()):
-        t0 = seconds_since_leak(rows[0]["timestamp"])
-        print(f"  {bait:22} | {len(rows):>4} | {t0:.0f} s")
-    print("=" * 72)
-
-    # Detail chronologique
-    for h in hits:
-        print(f"{h['timestamp']} | {h['source']:16} | {h['pays']:12} | {h['event']:18} | {h.get('bait','')}")
+    print("=" * 74)
+    print("IP UNIQUES (1re apparition) :")
+    seen = {}
+    for r in rows:
+        seen.setdefault(r["src_ip"], r)
+    for ip, r in seen.items():
+        print(f"  {r['timestamp']} | {ip:16} | {r['country']:3} | "
+              f"{r['asn_type']:7} | {r['org'][:26]:26} | {r['event']}")
 
 
 if __name__ == "__main__":
