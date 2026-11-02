@@ -25,6 +25,8 @@ Built on a normal Windows machine with free and open-source tools only — no vi
 
 ## Why I built this
 
+The spark for this project was a real story: a friend of mine accidentally pushed her entire Desktop folder to a public GitHub repository. It made me wonder how often this happens — and, more importantly, how fast attackers actually exploit what leaks. This project is my attempt to measure it.
+
 If a developer accidentally commits an AWS key or an API token to a public repository, it doesn't stay unnoticed for long. Automated bots crawl GitHub around the clock looking for exactly that, and they can exploit a key within minutes.
 
 A few numbers that convinced me the problem was worth a project:
